@@ -6,31 +6,49 @@ import { deriveBtcAddress, deriveUsdtAddress } from "../crypto";
 
 const USDT_CONTRACT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const USDC_CONTRACT = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-const SCAN_BATCH = 20; // wallets per JSON-RPC batch call
-const RPC_BATCH_DELAY_MS = 300; // ms between batches (~100 batches/min, well under limits)
 
-// Public Ethereum JSON-RPC endpoints — no API key required
-const ETH_RPC_PRIMARY   = "https://ethereum.publicnode.com";
-const ETH_RPC_FALLBACK  = "https://1rpc.io/eth";
+// ── Etherscan V2 (when keys are configured) ───────────────────────────────
+const ETHERSCAN_V2 = "https://api.etherscan.io/v2/api";
+
+// Read up to 3 Etherscan API keys from env; filter out any that are undefined/empty
+const ETHERSCAN_KEYS: string[] = [
+  import.meta.env.VITE_ETHERSCAN_KEY_1,
+  import.meta.env.VITE_ETHERSCAN_KEY_2,
+  import.meta.env.VITE_ETHERSCAN_KEY_3,
+].filter((k): k is string => typeof k === "string" && k.trim().length > 0);
+
+// Round-robin key rotation — two sequential calls pick two different keys
+let _keyIdx = 0;
+const nextKey = (): string => ETHERSCAN_KEYS[_keyIdx++ % ETHERSCAN_KEYS.length];
+
+// With 3 keys and 2 concurrent calls per wallet (USDT + USDC using different keys):
+//   each key handles 2/3 of all token calls.
+//   At 135 ms between wallets: each key sees ~4.9 calls/sec → safely under free-tier limit.
+const ETHERSCAN_WALLET_DELAY_MS = 135;
+const ETHERSCAN_BATCH_DELAY_MS  = 200; // between balancemulti batches
+const ETHERSCAN_BATCH_SIZE      = 20;  // balancemulti supports up to 20 addresses
+
+// ── JSON-RPC fallback (no key required) ──────────────────────────────────
+const SCAN_BATCH = 20;
+const RPC_BATCH_DELAY_MS = 300;
+const ETH_RPC_PRIMARY  = "https://ethereum.publicnode.com";
+const ETH_RPC_FALLBACK = "https://1rpc.io/eth";
 
 // ABI-encode balanceOf(address) — selector = keccak256("balanceOf(address)")[0:4]
 const encodeBalanceOf = (addr: string): string =>
   "0x70a08231" + addr.slice(2).toLowerCase().padStart(64, "0");
 
-// Convert hex RPC result (or null) to a decimal string
 const hexToDecStr = (hex: string | null | undefined): string => {
   if (!hex || hex === "0x" || hex === "0x0") return "0";
   try { return BigInt(hex).toString(); } catch { return "0"; }
 };
 
-// Execute a JSON-RPC batch. Falls back to the secondary RPC on network failure.
 type RpcReq = { method: string; params: unknown[] };
 const batchRpc = async (requests: RpcReq[]): Promise<(string | null)[]> => {
   const body = JSON.stringify(
     requests.map((r, i) => ({ jsonrpc: "2.0", id: i + 1, method: r.method, params: r.params }))
   );
   const headers = { "Content-Type": "application/json" };
-
   let raw: Response;
   try {
     raw = await fetch(ETH_RPC_PRIMARY, { method: "POST", headers, body });
@@ -39,13 +57,9 @@ const batchRpc = async (requests: RpcReq[]): Promise<(string | null)[]> => {
     raw = await fetch(ETH_RPC_FALLBACK, { method: "POST", headers, body });
     if (!raw.ok) throw new Error(`RPC fallback HTTP ${raw.status}`);
   }
-
   const results = await raw.json();
-  // Batch responses may arrive out of order — index by id
   const byId: Record<number, string | null> = {};
-  for (const r of (Array.isArray(results) ? results : [results])) {
-    byId[r.id] = r.result ?? null;
-  }
+  for (const r of (Array.isArray(results) ? results : [results])) byId[r.id] = r.result ?? null;
   return requests.map((_, i) => byId[i + 1] ?? null);
 };
 
@@ -159,44 +173,90 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
     try {
       if (asset === "ETH") {
         const total = filteredWallets.length;
-        const numBatches = Math.ceil(total / SCAN_BATCH);
         const ethBalances: Record<string, string>  = {};
         const usdtBalances: Record<string, string> = {};
         const usdcBalances: Record<string, string> = {};
+        const useEtherscan = ETHERSCAN_KEYS.length > 0;
 
-        // One batch request = ETH + USDT + USDC for up to 20 wallets (60 RPC calls bundled)
-        for (let b = 0; b < numBatches; b++) {
-          const slice = filteredWallets.slice(b * SCAN_BATCH, (b + 1) * SCAN_BATCH);
-          const addrs = slice.map((w) => w.address);
-
-          setSyncStatus(`Batch ${b + 1}/${numBatches} — scanning ${addrs.length} wallets`);
-          setSyncProgress(Math.round(((b + 1) / numBatches) * 100));
-
-          try {
-            // Fire all 60 sub-calls as a single HTTP request
-            const [ethRes, usdtRes, usdcRes] = await Promise.all([
-              batchRpc(addrs.map((a) => ({ method: "eth_getBalance",  params: [a, "latest"] }))),
-              batchRpc(addrs.map((a) => ({ method: "eth_call", params: [{ to: USDT_CONTRACT, data: encodeBalanceOf(a) }, "latest"] }))),
-              batchRpc(addrs.map((a) => ({ method: "eth_call", params: [{ to: USDC_CONTRACT, data: encodeBalanceOf(a) }, "latest"] }))),
-            ]);
-
-            for (let i = 0; i < addrs.length; i++) {
-              const lower = addrs[i].toLowerCase();
-              ethBalances[lower]  = hexToDecStr(ethRes[i]);
-              usdtBalances[lower] = hexToDecStr(usdtRes[i]);
-              usdcBalances[lower] = hexToDecStr(usdcRes[i]);
-            }
-          } catch (batchErr) {
-            console.warn(`Batch ${b + 1} failed — wallets in this batch will show 0`, batchErr);
-            for (const a of addrs) {
-              const lower = a.toLowerCase();
-              ethBalances[lower]  = ethBalances[lower]  ?? "0";
-              usdtBalances[lower] = usdtBalances[lower] ?? "0";
-              usdcBalances[lower] = usdcBalances[lower] ?? "0";
-            }
+        if (useEtherscan) {
+          // ── Etherscan V2 with key rotation ──────────────────────────────
+          // Phase 1: batch ETH balances (balancemulti, 20 per call)
+          const ethBatches = Math.ceil(total / ETHERSCAN_BATCH_SIZE);
+          for (let b = 0; b < ethBatches; b++) {
+            const slice = filteredWallets.slice(b * ETHERSCAN_BATCH_SIZE, (b + 1) * ETHERSCAN_BATCH_SIZE);
+            const addrs = slice.map((w) => w.address).join(",");
+            setSyncStatus(`ETH balances — batch ${b + 1}/${ethBatches} (Etherscan)`);
+            setSyncProgress(Math.round(((b + 1) / ethBatches) * 15));
+            try {
+              const res = await fetch(
+                `${ETHERSCAN_V2}?chainid=1&module=account&action=balancemulti&address=${addrs}&tag=latest&apikey=${nextKey()}`
+              );
+              const json = await res.json();
+              if (json.status === "1" && Array.isArray(json.result)) {
+                for (const item of json.result) {
+                  ethBalances[item.account.toLowerCase()] = item.balance;
+                }
+              }
+            } catch (e) { console.warn(`ETH batch ${b + 1} failed`, e); }
+            if (b < ethBatches - 1) await delay(ETHERSCAN_BATCH_DELAY_MS);
           }
 
-          if (b < numBatches - 1) await delay(RPC_BATCH_DELAY_MS);
+          // Phase 2: USDT + USDC per wallet — two different keys per wallet, concurrent
+          for (let i = 0; i < total; i++) {
+            const w   = filteredWallets[i];
+            const addr = w.address;
+            setSyncStatus(
+              `Wallet ${i + 1}/${total} — ${addr.slice(0, 6)}…${addr.slice(-4)} (${ETHERSCAN_KEYS.length} keys)`
+            );
+            setSyncProgress(15 + Math.round((i / total) * 85));
+            try {
+              const k1 = nextKey(), k2 = nextKey();
+              const [usdtRes, usdcRes] = await Promise.all([
+                fetch(`${ETHERSCAN_V2}?chainid=1&module=account&action=tokenbalance&contractaddress=${USDT_CONTRACT}&address=${addr}&tag=latest&apikey=${k1}`),
+                fetch(`${ETHERSCAN_V2}?chainid=1&module=account&action=tokenbalance&contractaddress=${USDC_CONTRACT}&address=${addr}&tag=latest&apikey=${k2}`),
+              ]);
+              const [uj, ucj] = await Promise.all([usdtRes.json(), usdcRes.json()]);
+              usdtBalances[addr.toLowerCase()] = uj.status  === "1" && uj.result  ? uj.result  : "0";
+              usdcBalances[addr.toLowerCase()] = ucj.status === "1" && ucj.result ? ucj.result : "0";
+            } catch (e) {
+              console.warn(`Token fetch failed for ${addr}`, e);
+              usdtBalances[addr.toLowerCase()] = "0";
+              usdcBalances[addr.toLowerCase()] = "0";
+            }
+            if (i < total - 1) await delay(ETHERSCAN_WALLET_DELAY_MS);
+          }
+
+        } else {
+          // ── JSON-RPC fallback (no Etherscan keys configured) ─────────────
+          const numBatches = Math.ceil(total / SCAN_BATCH);
+          for (let b = 0; b < numBatches; b++) {
+            const slice = filteredWallets.slice(b * SCAN_BATCH, (b + 1) * SCAN_BATCH);
+            const addrs = slice.map((w) => w.address);
+            setSyncStatus(`Batch ${b + 1}/${numBatches} — ${addrs.length} wallets (JSON-RPC)`);
+            setSyncProgress(Math.round(((b + 1) / numBatches) * 100));
+            try {
+              const [ethRes, usdtRes, usdcRes] = await Promise.all([
+                batchRpc(addrs.map((a) => ({ method: "eth_getBalance",  params: [a, "latest"] }))),
+                batchRpc(addrs.map((a) => ({ method: "eth_call", params: [{ to: USDT_CONTRACT, data: encodeBalanceOf(a) }, "latest"] }))),
+                batchRpc(addrs.map((a) => ({ method: "eth_call", params: [{ to: USDC_CONTRACT, data: encodeBalanceOf(a) }, "latest"] }))),
+              ]);
+              for (let i = 0; i < addrs.length; i++) {
+                const lower = addrs[i].toLowerCase();
+                ethBalances[lower]  = hexToDecStr(ethRes[i]);
+                usdtBalances[lower] = hexToDecStr(usdtRes[i]);
+                usdcBalances[lower] = hexToDecStr(usdcRes[i]);
+              }
+            } catch (batchErr) {
+              console.warn(`Batch ${b + 1} failed`, batchErr);
+              for (const a of addrs) {
+                const lower = a.toLowerCase();
+                ethBalances[lower]  = ethBalances[lower]  ?? "0";
+                usdtBalances[lower] = usdtBalances[lower] ?? "0";
+                usdcBalances[lower] = usdcBalances[lower] ?? "0";
+              }
+            }
+            if (b < numBatches - 1) await delay(RPC_BATCH_DELAY_MS);
+          }
         }
 
         setSyncProgress(100);
@@ -330,9 +390,15 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
 
   const estimatedMinutes = useMemo(() => {
     if (asset !== "ETH") return null;
-    // Batch of 20 wallets per RPC call + 300ms delay → ~(batches * 0.8)s
-    const batches = Math.ceil(filteredWallets.length / SCAN_BATCH);
-    const secs = Math.ceil(batches * 0.8) + 3; // +3s for network latency
+    const n = filteredWallets.length;
+    let secs: number;
+    if (ETHERSCAN_KEYS.length > 0) {
+      // Etherscan: 135ms per wallet (token phase) + ~2s ETH batch phase
+      secs = Math.ceil(n * ETHERSCAN_WALLET_DELAY_MS / 1000) + 2;
+    } else {
+      // JSON-RPC: 20 wallets per batch, ~800ms per batch
+      secs = Math.ceil((n / SCAN_BATCH) * 0.8) + 3;
+    }
     if (secs < 60) return `~${secs}s`;
     return `~${Math.ceil(secs / 60)} min`;
   }, [asset, filteredWallets.length]);
@@ -348,7 +414,11 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
               HD Wallet Generator & Scanner
             </h2>
             <p className="text-xs text-slate-500">
-              Derive addresses from your XPUB and scan ETH + USDT + USDC balances via Ethereum JSON-RPC. No API key required.
+              Derive addresses from your XPUB and scan ETH + USDT + USDC balances.{" "}
+            {ETHERSCAN_KEYS.length > 0
+              ? <span className="text-emerald-400">{ETHERSCAN_KEYS.length} Etherscan key{ETHERSCAN_KEYS.length > 1 ? "s" : ""} active — rotating for {ETHERSCAN_KEYS.length}× throughput.</span>
+              : <span className="text-slate-500">Using public JSON-RPC (no API key needed).</span>
+            }
             </p>
           </div>
 
