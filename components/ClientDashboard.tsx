@@ -1,5 +1,5 @@
-import React, { useMemo } from "react";
-import { TrendingUp, Wallet, ExternalLink, AlertCircle } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { TrendingUp, Wallet, ExternalLink, AlertCircle, DollarSign, RefreshCw } from "lucide-react";
 import { formatEther } from "ethers";
 import { GeneratedWallet } from "../models";
 
@@ -16,7 +16,6 @@ const SummaryCard: React.FC<SummaryCardProps> = ({ label, value, unit, scanned, 
     color === "emerald" ? "text-emerald-400" :
     color === "blue"    ? "text-blue-400"    :
                           "text-white";
-
   return (
     <div className="bg-slate-800/50 border border-slate-700/50 p-6 rounded-2xl flex flex-col gap-2 relative overflow-hidden group">
       <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
@@ -25,13 +24,9 @@ const SummaryCard: React.FC<SummaryCardProps> = ({ label, value, unit, scanned, 
       <div className="flex items-center justify-between z-10">
         <span className="text-slate-400 text-sm font-medium">{label}</span>
         {scanned ? (
-          <span className="text-[10px] text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
-            Live
-          </span>
+          <span className="text-[10px] text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">Live</span>
         ) : (
-          <span className="text-[10px] text-slate-600 bg-slate-800 border border-slate-700 px-2 py-0.5 rounded-full">
-            Not scanned
-          </span>
+          <span className="text-[10px] text-slate-600 bg-slate-800 border border-slate-700 px-2 py-0.5 rounded-full">Not scanned</span>
         )}
       </div>
       <div className={`text-2xl font-bold tabular-nums z-10 ${valueColor}`}>
@@ -55,6 +50,51 @@ export const ClientDashboard: React.FC<OverviewDashboardProps> = ({ wallets }) =
   );
   const hasScanned = scannedCount > 0;
 
+  // ── Live ETH price ────────────────────────────────────────────────────
+  const [ethPriceUsd, setEthPriceUsd] = useState<number | null>(null);
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [priceError, setPriceError] = useState(false);
+
+  const fetchEthPrice = async () => {
+    setPriceLoading(true);
+    setPriceError(false);
+    try {
+      // Binance public ticker — no key needed, very reliable
+      const res = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT");
+      const json = await res.json();
+      const price = parseFloat(json.price);
+      if (!isNaN(price) && price > 0) {
+        setEthPriceUsd(price);
+      } else {
+        throw new Error("invalid price");
+      }
+    } catch {
+      // Fallback: CoinGecko
+      try {
+        const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd");
+        const json = await res.json();
+        const price = json?.ethereum?.usd;
+        if (price && typeof price === "number") {
+          setEthPriceUsd(price);
+        } else {
+          setPriceError(true);
+        }
+      } catch {
+        setPriceError(true);
+      }
+    } finally {
+      setPriceLoading(false);
+    }
+  };
+
+  // Fetch on mount, refresh every 60 seconds
+  useEffect(() => {
+    fetchEthPrice();
+    const interval = setInterval(fetchEthPrice, 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Aggregate totals ──────────────────────────────────────────────────
   const totals = useMemo(() => {
     let ethWei = 0n, usdtRaw = 0n, usdcRaw = 0n;
     for (const w of ethWallets) {
@@ -69,7 +109,13 @@ export const ClientDashboard: React.FC<OverviewDashboardProps> = ({ wallets }) =
     };
   }, [ethWallets]);
 
-  // Wallets with at least one non-zero balance
+  const totalUsd = useMemo(() => {
+    const stables = totals.usdt + totals.usdc;
+    if (ethPriceUsd === null) return null;
+    return totals.eth * ethPriceUsd + stables;
+  }, [totals, ethPriceUsd]);
+
+  // ── Wallets with balance ──────────────────────────────────────────────
   const activeWallets = useMemo(
     () =>
       ethWallets
@@ -96,10 +142,77 @@ export const ClientDashboard: React.FC<OverviewDashboardProps> = ({ wallets }) =
     } catch { return "—"; }
   };
 
-  return (
-    <div className="max-w-5xl mx-auto space-y-8 relative z-10 animate-fade-in">
+  const fmtUsd = (n: number) =>
+    "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-      {/* ── Aggregate balance cards ───────────────────────────────────── */}
+  return (
+    <div className="max-w-5xl mx-auto space-y-6 relative z-10 animate-fade-in">
+
+      {/* ── Total Portfolio Value (USD) ───────────────────────────────── */}
+      {hasScanned && (
+        <div className="relative overflow-hidden rounded-2xl border border-slate-700/60 bg-gradient-to-br from-slate-800/80 to-slate-900/80 p-6">
+          {/* Subtle glow */}
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(99,102,241,0.08),transparent_60%)]" />
+
+          <div className="relative flex items-center justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/15 border border-indigo-500/20">
+                <DollarSign size={22} className="text-indigo-400" />
+              </div>
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-0.5">
+                  Total Portfolio Value
+                </div>
+                {totalUsd !== null ? (
+                  <div className="text-3xl font-bold text-white tabular-nums">
+                    {fmtUsd(totalUsd)}
+                    <span className="ml-2 text-sm font-normal text-slate-500">USD</span>
+                  </div>
+                ) : (
+                  <div className="text-xl text-slate-500">
+                    {priceLoading ? "Fetching ETH price…" : priceError ? "ETH price unavailable" : "—"}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-6 text-right">
+              {/* Breakdown */}
+              {ethPriceUsd !== null && (
+                <div className="text-right space-y-1">
+                  <div className="text-[11px] text-slate-500">
+                    {totals.eth.toFixed(4)} ETH × {fmtUsd(ethPriceUsd)}
+                    <span className="ml-1 text-slate-600">= {fmtUsd(totals.eth * ethPriceUsd)}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {fmtUsd(totals.usdt + totals.usdc)} stablecoins (USDT + USDC)
+                  </div>
+                </div>
+              )}
+
+              {/* Refresh button + price badge */}
+              <div className="flex flex-col items-end gap-2">
+                {ethPriceUsd !== null && (
+                  <span className="text-[10px] text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded-full">
+                    ETH = {fmtUsd(ethPriceUsd)}
+                  </span>
+                )}
+                <button
+                  onClick={fetchEthPrice}
+                  disabled={priceLoading}
+                  className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-40"
+                  title="Refresh ETH price"
+                >
+                  <RefreshCw size={11} className={priceLoading ? "animate-spin" : ""} />
+                  Refresh price
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Individual token cards ────────────────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <SummaryCard
           label="Total ETH"
@@ -157,7 +270,7 @@ export const ClientDashboard: React.FC<OverviewDashboardProps> = ({ wallets }) =
         </div>
       )}
 
-      {/* ── Wallets with balance ──────────────────────────────────────── */}
+      {/* ── Wallets with balance table ────────────────────────────────── */}
       {activeWallets.length > 0 && (
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
           <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
@@ -173,36 +286,55 @@ export const ClientDashboard: React.FC<OverviewDashboardProps> = ({ wallets }) =
                   <th className="px-5 py-3 text-right">ETH</th>
                   <th className="px-5 py-3 text-right">USDT</th>
                   <th className="px-5 py-3 text-right">USDC</th>
+                  {ethPriceUsd !== null && <th className="px-5 py-3 text-right">≈ USD</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {activeWallets.map((w) => (
-                  <tr key={w.id} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="px-5 py-3 text-xs text-slate-500">{w.derivationIndex}</td>
-                    <td className="px-5 py-3 font-mono text-xs text-slate-200">
-                      <div className="flex items-center gap-1.5">
-                        <span>{w.address.slice(0, 10)}…{w.address.slice(-8)}</span>
-                        <a
-                          href={`https://etherscan.io/address/${w.address}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-slate-600 hover:text-blue-400 transition-colors"
-                        >
-                          <ExternalLink size={11} />
-                        </a>
-                      </div>
-                    </td>
-                    <td className={`px-5 py-3 text-xs text-right tabular-nums ${w.balanceWei && w.balanceWei !== "0" ? "text-white font-medium" : "text-slate-600"}`}>
-                      {fmtEth(w.balanceWei)}
-                    </td>
-                    <td className={`px-5 py-3 text-xs text-right tabular-nums ${w.usdtBalanceRaw && w.usdtBalanceRaw !== "0" ? "text-emerald-400 font-medium" : "text-slate-600"}`}>
-                      {fmtToken(w.usdtBalanceRaw)}
-                    </td>
-                    <td className={`px-5 py-3 text-xs text-right tabular-nums ${w.usdcBalanceRaw && w.usdcBalanceRaw !== "0" ? "text-blue-400 font-medium" : "text-slate-600"}`}>
-                      {fmtToken(w.usdcBalanceRaw)}
-                    </td>
-                  </tr>
-                ))}
+                {activeWallets.map((w) => {
+                  const ethVal = w.balanceWei && w.balanceWei !== "0"
+                    ? parseFloat(formatEther(BigInt(w.balanceWei)))
+                    : 0;
+                  const usdtVal = w.usdtBalanceRaw && w.usdtBalanceRaw !== "0"
+                    ? parseFloat(w.usdtBalanceRaw) / 1e6 : 0;
+                  const usdcVal = w.usdcBalanceRaw && w.usdcBalanceRaw !== "0"
+                    ? parseFloat(w.usdcBalanceRaw) / 1e6 : 0;
+                  const walletUsd = ethPriceUsd !== null
+                    ? ethVal * ethPriceUsd + usdtVal + usdcVal
+                    : null;
+
+                  return (
+                    <tr key={w.id} className="hover:bg-slate-800/40 transition-colors">
+                      <td className="px-5 py-3 text-xs text-slate-500">{w.derivationIndex}</td>
+                      <td className="px-5 py-3 font-mono text-xs text-slate-200">
+                        <div className="flex items-center gap-1.5">
+                          <span>{w.address.slice(0, 10)}…{w.address.slice(-8)}</span>
+                          <a
+                            href={`https://etherscan.io/address/${w.address}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-slate-600 hover:text-blue-400 transition-colors"
+                          >
+                            <ExternalLink size={11} />
+                          </a>
+                        </div>
+                      </td>
+                      <td className={`px-5 py-3 text-xs text-right tabular-nums ${w.balanceWei && w.balanceWei !== "0" ? "text-white font-medium" : "text-slate-600"}`}>
+                        {fmtEth(w.balanceWei)}
+                      </td>
+                      <td className={`px-5 py-3 text-xs text-right tabular-nums ${w.usdtBalanceRaw && w.usdtBalanceRaw !== "0" ? "text-emerald-400 font-medium" : "text-slate-600"}`}>
+                        {fmtToken(w.usdtBalanceRaw)}
+                      </td>
+                      <td className={`px-5 py-3 text-xs text-right tabular-nums ${w.usdcBalanceRaw && w.usdcBalanceRaw !== "0" ? "text-blue-400 font-medium" : "text-slate-600"}`}>
+                        {fmtToken(w.usdcBalanceRaw)}
+                      </td>
+                      {ethPriceUsd !== null && (
+                        <td className="px-5 py-3 text-xs text-right tabular-nums text-indigo-300 font-medium">
+                          {walletUsd !== null && walletUsd > 0 ? fmtUsd(walletUsd) : "—"}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
