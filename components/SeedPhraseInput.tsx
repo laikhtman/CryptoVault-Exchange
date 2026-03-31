@@ -95,9 +95,12 @@ export const SeedPhraseInput: React.FC<SeedPhraseInputProps> = ({ onDerive, mess
     setHighlightIdx(0);
   }, []);
 
-  const handleBlur = useCallback(() => {
-    // Delay so click on a suggestion fires before we hide the dropdown
-    setTimeout(() => setActiveIdx(null), 160);
+  const handleBlur = useCallback((idx: number) => {
+    // Only clear activeIdx if it's still this input — avoids a race where the blur
+    // timeout from input N fires after input N+1 has already set its own activeIdx.
+    setTimeout(() => {
+      setActiveIdx((current) => (current === idx ? null : current));
+    }, 160);
   }, []);
 
   const allFilled = words.slice(0, wordCount).every((w) => BIP39_SET.has(w));
@@ -172,7 +175,7 @@ export const SeedPhraseInput: React.FC<SeedPhraseInputProps> = ({ onDerive, mess
                   value={word}
                   onChange={(e) => handleChange(i, e.target.value)}
                   onFocus={() => handleFocus(i)}
-                  onBlur={handleBlur}
+                  onBlur={() => handleBlur(i)}
                   onKeyDown={(e) => handleKeyDown(e, i)}
                   className="flex-1 min-w-0 bg-transparent py-1.5 pr-2 text-slate-100 font-mono focus:outline-none placeholder:text-slate-700"
                   placeholder={`word ${i + 1}`}
