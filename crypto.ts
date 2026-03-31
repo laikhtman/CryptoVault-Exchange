@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { p2wpkh } from "@scure/btc-signer";
 
 // --- Base58 helpers for zpub/xpub normalization ---
 
@@ -62,7 +63,7 @@ const ZPUB_MAINNET_VERSION = new Uint8Array([0x04, 0xb2, 0x47, 0x46]);
 // xpub mainnet version bytes: 0x0488b21e
 const XPUB_MAINNET_VERSION = new Uint8Array([0x04, 0x88, 0xb2, 0x1e]);
 
-const normalizeBtcExtendedKey = (key: string): string => {
+export const normalizeBtcExtendedKey = (key: string): string => {
   if (key.startsWith("xpub")) {
     return key;
   }
@@ -83,7 +84,6 @@ const normalizeBtcExtendedKey = (key: string): string => {
         version[3] === ZPUB_MAINNET_VERSION[3];
 
       if (!isZpub) {
-        // Unknown version; just fall back to original string.
         return key;
       }
 
@@ -102,8 +102,8 @@ const normalizeBtcExtendedKey = (key: string): string => {
 };
 
 /**
- * Derives an ETH address (for USDT-ERC20) from a master XPUB and an index.
- * Path: m/44'/60'/0'/0/index (Standard External Chain)
+ * Derives an ETH address (for ETH/USDT/USDC ERC-20) from a master XPUB and an index.
+ * Path: m/44'/60'/0'/0/index (Standard External Chain — same path as Trezor)
  */
 export const deriveUsdtAddress = (xpub: string, index: number): string => {
   try {
@@ -120,10 +120,9 @@ export const deriveUsdtAddress = (xpub: string, index: number): string => {
 };
 
 /**
- * Derives a BTC address from a master XPUB/zpub and an index.
- * For this demo we derive a deterministic bech32-style address string
- * from the HD public key using ethers' HDNode as a generic BIP32 helper.
- * Path: m/84'/0'/0'/0/index (Native SegWit-like path, simulated)
+ * Derives a real Bitcoin native-segwit (P2WPKH / bech32) address from a master
+ * XPUB/ZPUB and an index using the BIP84 external chain path (0/index).
+ * Produces the same addresses as Trezor for the m/84'/0'/0' account.
  */
 export const deriveBtcAddress = (extendedKey: string, index: number): string => {
   try {
@@ -131,13 +130,16 @@ export const deriveBtcAddress = (extendedKey: string, index: number): string => 
 
     const normalized = normalizeBtcExtendedKey(extendedKey);
 
+    // ethers HDNodeWallet handles BIP32 arithmetic regardless of coin type
     const node = ethers.HDNodeWallet.fromExtendedKey(normalized as any);
     const child = node.derivePath(`0/${index}`);
 
-    const hash = ethers.keccak256(child.publicKey);
-    const suffix = hash.replace(/^0x/, "").slice(0, 40);
+    // Compress the public key to 33 bytes (BIP32 always stores compressed keys)
+    const compressedHex = ethers.SigningKey.computePublicKey(child.publicKey, true);
+    const pubKeyBytes = ethers.getBytes(compressedHex);
 
-    return `bc1q${suffix}`;
+    // Produce a real P2WPKH bech32 address (bc1q...)
+    return p2wpkh(pubKeyBytes).address!;
   } catch (e) {
     console.error("Error deriving BTC address:", e);
     return "Error: Invalid BTC extended key";

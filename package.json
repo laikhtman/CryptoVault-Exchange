@@ -28,19 +28,31 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "workflow": "node scripts/orchestrate.mjs",
+    "workflow:feature": "node scripts/orchestrate.mjs feature",
+    "workflow:bugfix": "node scripts/orchestrate.mjs bugfix",
+    "workflow:audit": "node scripts/orchestrate.mjs audit",
+    "workflow:review": "node scripts/orchestrate.mjs full-review",
+    "workflow:qa": "node scripts/orchestrate.mjs qa-check",
+    "workflow:docs": "node scripts/orchestrate.mjs docs"
   },
   "dependencies": {
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
+    "@scure/btc-signer": "^2.0.1",
+    "@trezor/connect-web": "^9.7.2",
+    "ethers": "6.13.1",
     "lucide-react": "0.263.1",
     "qrcode.react": "^3.1.0",
-    "ethers": "6.13.1"
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "@types/react": "^18.3.28",
+    "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "vite-plugin-node-polyfills": "^0.26.0"
   }
 }

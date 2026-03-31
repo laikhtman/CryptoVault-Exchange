@@ -63,6 +63,8 @@ export type GeneratedWallet = {
   address: string;
   createdAt: string;
   txCount?: number;
-  balanceWei?: string; // ETH balance in wei
-  balanceSats?: number; // BTC balance in sats
+  balanceWei?: string;      // ETH balance in wei
+  balanceSats?: number;     // BTC balance in sats
+  usdtBalanceRaw?: string;  // USDT balance raw string (6 decimals)
+  usdcBalanceRaw?: string;  // USDC balance raw string (6 decimals)
 };

@@ -19,7 +19,7 @@ type NavKey = "dashboard" | "wallets" | "admin";
 type NavItem = {
   key: NavKey;
   label: string;
-  icon: React.ComponentType<{ size?: number; className?: string }>;
+  icon: React.ComponentType<{ size?: number | string; className?: string }>;
   hint: string;
 };
 
@@ -337,7 +337,7 @@ const App = () => {
               {activeTab === "wallets" && (
                 <WalletsView config={config} wallets={wallets} setWallets={setWallets} />
               )}
-              {activeTab === "dashboard" && <ClientDashboard client={selectedClient ?? undefined} deposits={deposits} />}
+              {activeTab === "dashboard" && <ClientDashboard client={selectedClient ?? undefined} deposits={deposits} wallets={wallets} />}
             </div>
           </main>
         </section>
