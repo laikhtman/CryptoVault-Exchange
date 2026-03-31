@@ -24,6 +24,10 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@trezor/connect-web'],
+    // Let Vite pre-bundle @trezor/connect-web — it's CJS-only and must be
+    // converted to ESM by esbuild before the browser can load it.
+    // Excluding it (previous behaviour) served the raw CJS to the browser
+    // which caused "exports is not defined" at runtime.
+    include: ['@trezor/connect-web'],
   },
 });
