@@ -23,21 +23,9 @@ export interface AppConfig {
 
 // --- Mock / Initial Data ---
 
-export const INITIAL_CLIENTS: UserProfile[] = [
-  {
-    id: 1,
-    name: "Alex Trader",
-    email: "alex@example.com",
-    role: 'client',
-    derivationIndex: 1,
-    balance: {
-      btc: 0.45,
-      usdt: 12500.0,
-      usd: 450.2
-    },
-    notes: "Example seeded client for demo"
-  }
-];
+// No clients by default — the wallet scanner is independent of the client system.
+// Clients can be added later via the Admin panel or by re-enabling the client UI.
+export const INITIAL_CLIENTS: UserProfile[] = [];
 
 export const INITIAL_CONFIG: AppConfig = {
   // Start with empty XPUBs; user or admin must provide them
