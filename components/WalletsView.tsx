@@ -6,7 +6,48 @@ import { deriveBtcAddress, deriveUsdtAddress } from "../crypto";
 
 const USDT_CONTRACT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const USDC_CONTRACT = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-const ETH_BATCH_SIZE = 20; // Etherscan balancemulti supports up to 20 addresses
+const SCAN_BATCH = 20; // wallets per JSON-RPC batch call
+const RPC_BATCH_DELAY_MS = 300; // ms between batches (~100 batches/min, well under limits)
+
+// Public Ethereum JSON-RPC endpoints — no API key required
+const ETH_RPC_PRIMARY   = "https://ethereum.publicnode.com";
+const ETH_RPC_FALLBACK  = "https://1rpc.io/eth";
+
+// ABI-encode balanceOf(address) — selector = keccak256("balanceOf(address)")[0:4]
+const encodeBalanceOf = (addr: string): string =>
+  "0x70a08231" + addr.slice(2).toLowerCase().padStart(64, "0");
+
+// Convert hex RPC result (or null) to a decimal string
+const hexToDecStr = (hex: string | null | undefined): string => {
+  if (!hex || hex === "0x" || hex === "0x0") return "0";
+  try { return BigInt(hex).toString(); } catch { return "0"; }
+};
+
+// Execute a JSON-RPC batch. Falls back to the secondary RPC on network failure.
+type RpcReq = { method: string; params: unknown[] };
+const batchRpc = async (requests: RpcReq[]): Promise<(string | null)[]> => {
+  const body = JSON.stringify(
+    requests.map((r, i) => ({ jsonrpc: "2.0", id: i + 1, method: r.method, params: r.params }))
+  );
+  const headers = { "Content-Type": "application/json" };
+
+  let raw: Response;
+  try {
+    raw = await fetch(ETH_RPC_PRIMARY, { method: "POST", headers, body });
+    if (!raw.ok) throw new Error(`HTTP ${raw.status}`);
+  } catch {
+    raw = await fetch(ETH_RPC_FALLBACK, { method: "POST", headers, body });
+    if (!raw.ok) throw new Error(`RPC fallback HTTP ${raw.status}`);
+  }
+
+  const results = await raw.json();
+  // Batch responses may arrive out of order — index by id
+  const byId: Record<number, string | null> = {};
+  for (const r of (Array.isArray(results) ? results : [results])) {
+    byId[r.id] = r.result ?? null;
+  }
+  return requests.map((_, i) => byId[i + 1] ?? null);
+};
 
 type WalletsViewProps = {
   config: AppConfig;
@@ -110,73 +151,45 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
     setSyncing(true);
     try {
       if (asset === "ETH") {
-        const apiKey = import.meta.env.VITE_ETHERSCAN_API_KEY as string | undefined;
-        if (!apiKey) {
-          setMessage(
-            "VITE_ETHERSCAN_API_KEY is not set. Create a .env.local file with: VITE_ETHERSCAN_API_KEY=your_key"
-          );
-          return;
-        }
-
         const total = filteredWallets.length;
-        const ethBalances: Record<string, string> = {};
-
-        // ── Phase 1: Batch ETH balances (20 addresses per call) ──────────────
-        const batches = Math.ceil(total / ETH_BATCH_SIZE);
-        for (let b = 0; b < batches; b++) {
-          const slice = filteredWallets.slice(b * ETH_BATCH_SIZE, (b + 1) * ETH_BATCH_SIZE);
-          const addrs = slice.map((w) => w.address).join(",");
-          setSyncStatus(`Fetching ETH balances — batch ${b + 1}/${batches}`);
-
-          const res = await fetch(
-            `https://api.etherscan.io/api?module=account&action=balancemulti&address=${addrs}&tag=latest&apikey=${apiKey}`
-          );
-          const json = await res.json();
-          if (json.status === "1" && Array.isArray(json.result)) {
-            for (const item of json.result) {
-              ethBalances[item.account.toLowerCase()] = item.balance;
-            }
-          }
-          setSyncProgress(Math.round(((b + 1) / batches) * 25));
-          if (b < batches - 1) await delay(250);
-        }
-
-        // ── Phase 2: USDT + USDC token balances (concurrent per wallet) ──────
-        // Rate: 2 concurrent calls per 450ms ≈ 4.4 calls/sec (under free-tier limit)
+        const numBatches = Math.ceil(total / SCAN_BATCH);
+        const ethBalances: Record<string, string>  = {};
         const usdtBalances: Record<string, string> = {};
         const usdcBalances: Record<string, string> = {};
 
-        for (let i = 0; i < total; i++) {
-          const w = filteredWallets[i];
-          const addr = w.address;
-          const shortAddr = `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-          setSyncStatus(`Scanning wallet ${i + 1}/${total} (${shortAddr}) — USDT + USDC`);
-          setSyncProgress(25 + Math.round((i / total) * 75));
+        // One batch request = ETH + USDT + USDC for up to 20 wallets (60 RPC calls bundled)
+        for (let b = 0; b < numBatches; b++) {
+          const slice = filteredWallets.slice(b * SCAN_BATCH, (b + 1) * SCAN_BATCH);
+          const addrs = slice.map((w) => w.address);
 
-          // Per-wallet try/catch: a single API failure must NOT abort the entire scan
+          setSyncStatus(`Batch ${b + 1}/${numBatches} — scanning ${addrs.length} wallets`);
+          setSyncProgress(Math.round(((b + 1) / numBatches) * 100));
+
           try {
-            const [usdtRes, usdcRes] = await Promise.all([
-              fetch(
-                `https://api.etherscan.io/api?module=account&action=tokenbalance&contractaddress=${USDT_CONTRACT}&address=${addr}&tag=latest&apikey=${apiKey}`
-              ),
-              fetch(
-                `https://api.etherscan.io/api?module=account&action=tokenbalance&contractaddress=${USDC_CONTRACT}&address=${addr}&tag=latest&apikey=${apiKey}`
-              ),
+            // Fire all 60 sub-calls as a single HTTP request
+            const [ethRes, usdtRes, usdcRes] = await Promise.all([
+              batchRpc(addrs.map((a) => ({ method: "eth_getBalance",  params: [a, "latest"] }))),
+              batchRpc(addrs.map((a) => ({ method: "eth_call", params: [{ to: USDT_CONTRACT, data: encodeBalanceOf(a) }, "latest"] }))),
+              batchRpc(addrs.map((a) => ({ method: "eth_call", params: [{ to: USDC_CONTRACT, data: encodeBalanceOf(a) }, "latest"] }))),
             ]);
 
-            const [usdtJson, usdcJson] = await Promise.all([usdtRes.json(), usdcRes.json()]);
-
-            usdtBalances[addr.toLowerCase()] =
-              usdtJson.status === "1" && usdtJson.result ? usdtJson.result : "0";
-            usdcBalances[addr.toLowerCase()] =
-              usdcJson.status === "1" && usdcJson.result ? usdcJson.result : "0";
-          } catch (walletErr) {
-            console.warn(`Token balance fetch failed for ${addr} — defaulting to 0`, walletErr);
-            usdtBalances[addr.toLowerCase()] = "0";
-            usdcBalances[addr.toLowerCase()] = "0";
+            for (let i = 0; i < addrs.length; i++) {
+              const lower = addrs[i].toLowerCase();
+              ethBalances[lower]  = hexToDecStr(ethRes[i]);
+              usdtBalances[lower] = hexToDecStr(usdtRes[i]);
+              usdcBalances[lower] = hexToDecStr(usdcRes[i]);
+            }
+          } catch (batchErr) {
+            console.warn(`Batch ${b + 1} failed — wallets in this batch will show 0`, batchErr);
+            for (const a of addrs) {
+              const lower = a.toLowerCase();
+              ethBalances[lower]  = ethBalances[lower]  ?? "0";
+              usdtBalances[lower] = usdtBalances[lower] ?? "0";
+              usdcBalances[lower] = usdcBalances[lower] ?? "0";
+            }
           }
 
-          if (i < total - 1) await delay(450);
+          if (b < numBatches - 1) await delay(RPC_BATCH_DELAY_MS);
         }
 
         setSyncProgress(100);
@@ -188,24 +201,20 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
             const lower = w.address.toLowerCase();
             return {
               ...w,
-              balanceWei: ethBalances[lower] ?? w.balanceWei ?? "0",
+              balanceWei:     ethBalances[lower]  ?? w.balanceWei     ?? "0",
               usdtBalanceRaw: usdtBalances[lower] ?? w.usdtBalanceRaw ?? "0",
               usdcBalanceRaw: usdcBalances[lower] ?? w.usdcBalanceRaw ?? "0",
             };
           })
         );
 
-        // Count using the same merge logic as setWallets so we include previously-scanned balances
         const withBalance = filteredWallets.filter((w) => {
           const lower = w.address.toLowerCase();
-          const eth = ethBalances[lower] ?? w.balanceWei ?? "0";
-          const usdt = usdtBalances[lower] ?? w.usdtBalanceRaw ?? "0";
-          const usdc = usdcBalances[lower] ?? w.usdcBalanceRaw ?? "0";
-          return eth !== "0" || usdt !== "0" || usdc !== "0";
+          return (ethBalances[lower]  ?? w.balanceWei     ?? "0") !== "0"
+              || (usdtBalances[lower] ?? w.usdtBalanceRaw ?? "0") !== "0"
+              || (usdcBalances[lower] ?? w.usdcBalanceRaw ?? "0") !== "0";
         });
-        setMessage(
-          `Synced ${total} wallets. ${withBalance.length} have a non-zero balance.`
-        );
+        setMessage(`Synced ${total} wallets. ${withBalance.length} have a non-zero balance.`);
       } else {
         // ── BTC via mempool.space ─────────────────────────────────────────────
         const total = filteredWallets.length;
@@ -308,7 +317,9 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
 
   const estimatedMinutes = useMemo(() => {
     if (asset !== "ETH") return null;
-    const secs = Math.ceil(filteredWallets.length * 0.5);
+    // Batch of 20 wallets per RPC call + 300ms delay → ~(batches * 0.8)s
+    const batches = Math.ceil(filteredWallets.length / SCAN_BATCH);
+    const secs = Math.ceil(batches * 0.8) + 3; // +3s for network latency
     if (secs < 60) return `~${secs}s`;
     return `~${Math.ceil(secs / 60)} min`;
   }, [asset, filteredWallets.length]);
@@ -324,7 +335,7 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
               HD Wallet Generator & Scanner
             </h2>
             <p className="text-xs text-slate-500">
-              Derive addresses from your XPUB and scan ETH + USDT + USDC balances via Etherscan.
+              Derive addresses from your XPUB and scan ETH + USDT + USDC balances via Ethereum JSON-RPC. No API key required.
             </p>
           </div>
 
@@ -595,8 +606,7 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
       {asset === "ETH" && filteredWallets.length > 0 && synced.length === 0 && (
         <p className="text-[11px] text-slate-500 text-center">
           Click <strong className="text-slate-300">Scan balances</strong> to fetch ETH, USDT, and USDC
-          amounts from Etherscan. Requires <code className="text-slate-400">VITE_ETHERSCAN_API_KEY</code> in{" "}
-          <code className="text-slate-400">.env.local</code>.
+          amounts directly from the Ethereum network. No API key or configuration needed.
         </p>
       )}
     </div>
