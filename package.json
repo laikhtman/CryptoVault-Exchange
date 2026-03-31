@@ -35,7 +35,8 @@
     "workflow:audit": "node scripts/orchestrate.mjs audit",
     "workflow:review": "node scripts/orchestrate.mjs full-review",
     "workflow:qa": "node scripts/orchestrate.mjs qa-check",
-    "workflow:docs": "node scripts/orchestrate.mjs docs"
+    "workflow:docs": "node scripts/orchestrate.mjs docs",
+    "test": "node scripts/e2e-test.cjs"
   },
   "dependencies": {
     "@scure/btc-signer": "^2.0.1",
