@@ -122,18 +122,25 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
       });
     }
 
-    setWallets((prev) => {
-      const existingIndices = new Set(
-        prev.filter((w) => w.asset === asset).map((w) => w.derivationIndex)
-      );
-      const fresh = newWallets.filter((w) => !existingIndices.has(w.derivationIndex));
-      return [...prev, ...fresh];
-    });
+    // Deduplicate using the current snapshot — generation is synchronous so no race possible
+    const existingIndices = new Set(
+      wallets.filter((w) => w.asset === asset).map((w) => w.derivationIndex)
+    );
+    const fresh = newWallets.filter((w) => !existingIndices.has(w.derivationIndex));
 
-    // Functional update avoids stale closure if user clicks Generate rapidly
-    const endIndex = startIndex + count - 1;
-    setStartIndex((prev) => prev + count);
-    setMessage(`Generated ${count} ${asset} wallets (indices ${startIndex}–${endIndex}).`);
+    if (fresh.length === 0) {
+      setMessage(`All ${count} requested indices already exist — no wallets added.`);
+      return;
+    }
+
+    setWallets((prev) => [...prev, ...fresh]);
+
+    const endIndex = startIndex + fresh.length - 1;
+    setStartIndex((prev) => prev + fresh.length);
+    setMessage(
+      `Generated ${fresh.length} ${asset} wallet${fresh.length !== 1 ? "s" : ""} (indices ${startIndex}–${endIndex}).`
+        + (fresh.length < count ? ` ${count - fresh.length} skipped (already exist).` : "")
+    );
   };
 
   const delay = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
@@ -195,15 +202,21 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
         setSyncProgress(100);
         setSyncStatus("Done!");
 
+        // Only update wallets that were actually in this scan batch.
+        // Wallets added by the user DURING the scan are left untouched (balanceWei stays
+        // undefined → shown as "—" / not-scanned, rather than incorrectly showing "0").
+        const scannedSet = new Set(filteredWallets.map((w) => w.address.toLowerCase()));
+
         setWallets((prev) =>
           prev.map((w) => {
             if (w.asset !== "ETH") return w;
             const lower = w.address.toLowerCase();
+            if (!scannedSet.has(lower)) return w; // not part of this scan — preserve as-is
             return {
               ...w,
-              balanceWei:     ethBalances[lower]  ?? w.balanceWei     ?? "0",
-              usdtBalanceRaw: usdtBalances[lower] ?? w.usdtBalanceRaw ?? "0",
-              usdcBalanceRaw: usdcBalances[lower] ?? w.usdcBalanceRaw ?? "0",
+              balanceWei:     ethBalances[lower]  ?? "0",
+              usdtBalanceRaw: usdtBalances[lower] ?? "0",
+              usdcBalanceRaw: usdcBalances[lower] ?? "0",
             };
           })
         );

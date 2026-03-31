@@ -32,6 +32,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
   const [trezorError, setTrezorError] = useState<string | null>(null);
   const [btcError, setBtcError] = useState<string | null>(null);
   const [ethError, setEthError] = useState<string | null>(null);
+  // Local input state: what the user is typing — decoupled from persisted config.
+  // config.ethMasterXpub / config.btcMasterXpub only get updated when the value is valid.
+  const [btcXpubInput, setBtcXpubInput] = useState(config.btcMasterXpub);
+  const [ethXpubInput, setEthXpubInput] = useState(config.ethMasterXpub);
   const [stateJson, setStateJson] = useState("");
   const [stateMessage, setStateMessage] = useState<string | null>(null);
   const [seedPhrase, setSeedPhrase] = useState("");
@@ -64,21 +68,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
   };
 
   const handleBtcXpubChange = (next: string) => {
-    setConfig((prev) => ({ ...prev, btcMasterXpub: next }));
-    setBtcError(validateBtcXpub(next));
+    setBtcXpubInput(next);
+    const err = validateBtcXpub(next);
+    setBtcError(err);
+    // Only persist to config when valid or explicitly cleared — never store a known-bad key
+    if (!err) setConfig((prev) => ({ ...prev, btcMasterXpub: next }));
+    else if (!next.trim()) setConfig((prev) => ({ ...prev, btcMasterXpub: "" }));
   };
 
   const handleEthXpubChange = (next: string) => {
-    setConfig((prev) => ({ ...prev, ethMasterXpub: next }));
-    setEthError(validateEthXpub(next));
+    setEthXpubInput(next);
+    const err = validateEthXpub(next);
+    setEthError(err);
+    if (!err) setConfig((prev) => ({ ...prev, ethMasterXpub: next }));
+    else if (!next.trim()) setConfig((prev) => ({ ...prev, ethMasterXpub: "" }));
   };
 
   const handleResetConfig = () => {
     setConfig({ ...INITIAL_CONFIG });
+    setBtcXpubInput("");
+    setEthXpubInput("");
     setBtcError(null);
     setEthError(null);
     setTrezorError(null);
-    // Dispose the existing TrezorConnect instance so init runs cleanly on next connect
     try { TrezorConnect.dispose(); } catch { /* ignore if not initialized */ }
     trezorInitialized = false;
     setSuccessMsg("Configuration reset.");
@@ -142,6 +154,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
         ethMasterXpub: ethXpub,
         btcMasterXpub: btcXpub,
       }));
+      // Sync local input state so the inputs reflect the imported keys
+      setEthXpubInput(ethXpub);
+      if (btcImported) setBtcXpubInput(btcXpub);
 
       const imported = btcImported
         ? "ETH + BTC Master Public Keys imported."
@@ -183,6 +198,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
       const ethXpub = ethAccount.neuter().extendedKey;
 
       setConfig((prev) => ({ ...prev, btcMasterXpub: btcXpub, ethMasterXpub: ethXpub }));
+      setBtcXpubInput(btcXpub);
+      setEthXpubInput(ethXpub);
       setSeedPhrase("");
       setSeedMessage("XPUBs derived from seed phrase in-memory only. Seed was not persisted.");
       setBtcError(null);
@@ -319,7 +336,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
               </label>
               <input
                 type="text"
-                value={config.btcMasterXpub}
+                value={btcXpubInput}
                 onChange={(e) => handleBtcXpubChange(e.target.value)}
                 placeholder="Paste your BTC xpub or zpub..."
                 className="bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded-lg block w-full p-2.5 font-mono focus:outline-none focus:border-orange-500"
@@ -341,7 +358,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
               </div>
               <input
                 type="text"
-                value={config.ethMasterXpub}
+                value={ethXpubInput}
                 onChange={(e) => handleEthXpubChange(e.target.value)}
                 placeholder="Paste your ETH xpub..."
                 className="bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded-lg block w-full p-2.5 font-mono border-l-4 border-l-emerald-500 focus:outline-none focus:border-emerald-400"
