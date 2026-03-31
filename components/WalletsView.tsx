@@ -89,8 +89,10 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
       return [...prev, ...fresh];
     });
 
-    setStartIndex(startIndex + count);
-    setMessage(`Generated ${count} ${asset} wallets (indices ${startIndex}–${startIndex + count - 1}).`);
+    // Functional update avoids stale closure if user clicks Generate rapidly
+    const endIndex = startIndex + count - 1;
+    setStartIndex((prev) => prev + count);
+    setMessage(`Generated ${count} ${asset} wallets (indices ${startIndex}–${endIndex}).`);
   };
 
   const delay = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
@@ -151,21 +153,28 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
           setSyncStatus(`Scanning wallet ${i + 1}/${total} (${shortAddr}) — USDT + USDC`);
           setSyncProgress(25 + Math.round((i / total) * 75));
 
-          const [usdtRes, usdcRes] = await Promise.all([
-            fetch(
-              `https://api.etherscan.io/api?module=account&action=tokenbalance&contractaddress=${USDT_CONTRACT}&address=${addr}&tag=latest&apikey=${apiKey}`
-            ),
-            fetch(
-              `https://api.etherscan.io/api?module=account&action=tokenbalance&contractaddress=${USDC_CONTRACT}&address=${addr}&tag=latest&apikey=${apiKey}`
-            ),
-          ]);
+          // Per-wallet try/catch: a single API failure must NOT abort the entire scan
+          try {
+            const [usdtRes, usdcRes] = await Promise.all([
+              fetch(
+                `https://api.etherscan.io/api?module=account&action=tokenbalance&contractaddress=${USDT_CONTRACT}&address=${addr}&tag=latest&apikey=${apiKey}`
+              ),
+              fetch(
+                `https://api.etherscan.io/api?module=account&action=tokenbalance&contractaddress=${USDC_CONTRACT}&address=${addr}&tag=latest&apikey=${apiKey}`
+              ),
+            ]);
 
-          const [usdtJson, usdcJson] = await Promise.all([usdtRes.json(), usdcRes.json()]);
+            const [usdtJson, usdcJson] = await Promise.all([usdtRes.json(), usdcRes.json()]);
 
-          usdtBalances[addr.toLowerCase()] =
-            usdtJson.status === "1" && usdtJson.result ? usdtJson.result : "0";
-          usdcBalances[addr.toLowerCase()] =
-            usdcJson.status === "1" && usdcJson.result ? usdcJson.result : "0";
+            usdtBalances[addr.toLowerCase()] =
+              usdtJson.status === "1" && usdtJson.result ? usdtJson.result : "0";
+            usdcBalances[addr.toLowerCase()] =
+              usdcJson.status === "1" && usdcJson.result ? usdcJson.result : "0";
+          } catch (walletErr) {
+            console.warn(`Token balance fetch failed for ${addr} — defaulting to 0`, walletErr);
+            usdtBalances[addr.toLowerCase()] = "0";
+            usdcBalances[addr.toLowerCase()] = "0";
+          }
 
           if (i < total - 1) await delay(450);
         }
@@ -186,12 +195,14 @@ export const WalletsView: React.FC<WalletsViewProps> = ({ config, wallets, setWa
           })
         );
 
-        const withBalance = filteredWallets.filter(
-          (w) =>
-            (ethBalances[w.address.toLowerCase()] ?? "0") !== "0" ||
-            (usdtBalances[w.address.toLowerCase()] ?? "0") !== "0" ||
-            (usdcBalances[w.address.toLowerCase()] ?? "0") !== "0"
-        );
+        // Count using the same merge logic as setWallets so we include previously-scanned balances
+        const withBalance = filteredWallets.filter((w) => {
+          const lower = w.address.toLowerCase();
+          const eth = ethBalances[lower] ?? w.balanceWei ?? "0";
+          const usdt = usdtBalances[lower] ?? w.usdtBalanceRaw ?? "0";
+          const usdc = usdcBalances[lower] ?? w.usdcBalanceRaw ?? "0";
+          return eth !== "0" || usdt !== "0" || usdc !== "0";
+        });
         setMessage(
           `Synced ${total} wallets. ${withBalance.length} have a non-zero balance.`
         );

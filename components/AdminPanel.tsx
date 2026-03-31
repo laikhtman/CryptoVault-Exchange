@@ -3,7 +3,8 @@ import { ShieldCheck, Settings, RefreshCw, CheckCircle2, Download, Upload, Alert
 import { Mnemonic, HDNodeWallet } from "ethers";
 import trezorLogo from "../trezor.svg";
 import { AppConfig, INITIAL_CONFIG } from "../models";
-import TrezorConnect from "@trezor/connect-web";
+import * as _TrezorConnectModule from "@trezor/connect-web";
+const TrezorConnect = (_TrezorConnectModule as any).default ?? _TrezorConnectModule;
 
 type AdminPanelProps = {
   config: AppConfig;
@@ -40,23 +41,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
   const CLIENTS_STORAGE_KEY = "cryptovault_clients_v1";
   const DEPOSITS_STORAGE_KEY = "cryptovault_deposits_v1";
 
-  const validateXpub = (xpub: string): string | null => {
-    if (!xpub.trim()) return "XPUB is required";
+  // Valid base58 alphabet excludes 0, O, I, l
+  const BASE58_RE = /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]+$/;
+
+  const validateBtcXpub = (xpub: string): string | null => {
+    if (!xpub.trim()) return null; // empty is fine (optional)
     if (!xpub.startsWith("xpub") && !xpub.startsWith("zpub"))
-      return 'BTC extended key should start with "xpub" or "zpub" (mainnet)';
-    if (xpub.length < 100 || xpub.length > 120) return "XPUB length looks unusual; please verify";
-    if (!/^[0-9A-Za-z]+$/.test(xpub)) return "XPUB should contain only base58 characters";
+      return 'BTC extended key must start with "xpub" or "zpub" (mainnet)';
+    if (xpub.length < 100 || xpub.length > 120) return "XPUB length looks unusual; please double-check";
+    if (!BASE58_RE.test(xpub)) return "XPUB contains invalid characters (not valid base58)";
+    return null;
+  };
+
+  const validateEthXpub = (xpub: string): string | null => {
+    if (!xpub.trim()) return null;
+    // ETH xpub must be xpub format — zpub is BTC-only and will silently fail derivation
+    if (!xpub.startsWith("xpub"))
+      return 'ETH extended key must start with "xpub". Got a zpub? Use the BTC field instead.';
+    if (xpub.length < 100 || xpub.length > 120) return "XPUB length looks unusual; please double-check";
+    if (!BASE58_RE.test(xpub)) return "XPUB contains invalid characters (not valid base58)";
     return null;
   };
 
   const handleBtcXpubChange = (next: string) => {
     setConfig((prev) => ({ ...prev, btcMasterXpub: next }));
-    setBtcError(validateXpub(next));
+    setBtcError(validateBtcXpub(next));
   };
 
   const handleEthXpubChange = (next: string) => {
     setConfig((prev) => ({ ...prev, ethMasterXpub: next }));
-    setEthError(validateXpub(next));
+    setEthError(validateEthXpub(next));
   };
 
   const handleResetConfig = () => {
@@ -64,6 +78,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
     setBtcError(null);
     setEthError(null);
     setTrezorError(null);
+    // Dispose the existing TrezorConnect instance so init runs cleanly on next connect
+    try { TrezorConnect.dispose(); } catch { /* ignore if not initialized */ }
     trezorInitialized = false;
     setSuccessMsg("Configuration reset.");
     setTimeout(() => setSuccessMsg(""), 3000);
@@ -90,10 +106,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
         );
       }
 
+      // Validate the ETH xpub before using it
       const ethXpub = ethResult.payload.xpub;
+      if (!ethXpub || typeof ethXpub !== "string" || !ethXpub.startsWith("xpub")) {
+        throw new Error(
+          `Trezor returned an unexpected ETH key format: "${String(ethXpub).slice(0, 12)}...". Expected xpub.`
+        );
+      }
 
       // Try to also get BTC account XPUB (m/84'/0'/0' — native segwit)
       let btcXpub = config.btcMasterXpub;
+      let btcImported = false;
       try {
         const btcResult = await TrezorConnect.getPublicKey({
           path: "m/84'/0'/0'",
@@ -101,10 +124,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
         });
         if (btcResult.success) {
           // Prefer xpubSegwit (zpub format) when available; fall back to xpub
-          btcXpub = (btcResult.payload as any).xpubSegwit ?? btcResult.payload.xpub;
+          const candidate = (btcResult.payload as any).xpubSegwit ?? btcResult.payload.xpub;
+          if (candidate && typeof candidate === "string") {
+            btcXpub = candidate;
+            btcImported = true;
+          }
+        } else {
+          console.warn("BTC xpub import failed (non-fatal):", (btcResult.payload as any).error);
         }
-      } catch {
-        // BTC is optional — ETH is what we primarily need
+      } catch (e) {
+        console.warn("BTC xpub import threw (non-fatal):", e);
       }
 
       setConfig((prev) => ({
@@ -114,9 +143,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
         btcMasterXpub: btcXpub,
       }));
 
-      const imported = btcXpub && btcXpub !== config.btcMasterXpub
+      const imported = btcImported
         ? "ETH + BTC Master Public Keys imported."
-        : "ETH Master Public Key imported.";
+        : "ETH Master Public Key imported. (BTC import skipped — you can paste a zpub manually.)";
 
       setSuccessMsg(`Trezor connected! ${imported}`);
       setTimeout(() => setSuccessMsg(""), 5000);
