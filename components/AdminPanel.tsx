@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { SeedPhraseInput } from "./SeedPhraseInput";
 import { ShieldCheck, Settings, RefreshCw, CheckCircle2, Download, Upload, AlertCircle } from "lucide-react";
 import { Mnemonic, HDNodeWallet } from "ethers";
 import trezorLogo from "../trezor.svg";
@@ -38,7 +39,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
   const [ethXpubInput, setEthXpubInput] = useState(config.ethMasterXpub);
   const [stateJson, setStateJson] = useState("");
   const [stateMessage, setStateMessage] = useState<string | null>(null);
-  const [seedPhrase, setSeedPhrase] = useState("");
   const [seedMessage, setSeedMessage] = useState<string | null>(null);
 
   const CONFIG_STORAGE_KEY = "cryptovault_config_v1";
@@ -175,11 +175,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
     }
   };
 
-  const handleDeriveFromSeed = () => {
+  const handleDeriveFromSeed = (phrase: string) => {
     try {
-      const phrase = seedPhrase.trim();
       if (!phrase) {
-        setSeedMessage("Enter a BIP39 seed phrase to derive XPUBs (test phrases only).");
+        setSeedMessage("Enter all words to derive XPUBs.");
         return;
       }
       const words = phrase.split(/\s+/);
@@ -200,7 +199,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
       setConfig((prev) => ({ ...prev, btcMasterXpub: btcXpub, ethMasterXpub: ethXpub }));
       setBtcXpubInput(btcXpub);
       setEthXpubInput(ethXpub);
-      setSeedPhrase("");
       setSeedMessage("XPUBs derived from seed phrase in-memory only. Seed was not persisted.");
       setBtcError(null);
       setEthError(null);
@@ -372,29 +370,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ config, setConfig }) => 
         </div>
 
         {/* ── Seed Phrase Helper ─────────────────────────────────────────── */}
-        <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 space-y-3">
-          <h3 className="text-sm font-semibold text-white">Seed Phrase Helper (offline test only)</h3>
-          <p className="text-xs text-amber-400">
-            Never enter a real production seed here. Use only for offline test phrases. The phrase is
-            used in-memory to derive XPUBs and is never persisted.
-          </p>
-          <textarea
-            value={seedPhrase}
-            onChange={(e) => setSeedPhrase(e.target.value)}
-            rows={3}
-            className="w-full bg-slate-950 border border-slate-700 rounded-lg text-xs text-slate-200 font-mono p-2 resize-y focus:outline-none focus:border-slate-500"
-            placeholder="word1 word2 word3 ... (12 or 24 words, test phrases only)"
-          />
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={handleDeriveFromSeed}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs bg-emerald-600 text-white hover:bg-emerald-500"
-            >
-              Derive BTC &amp; ETH XPUBs
-            </button>
-            {seedMessage && <p className="text-[11px] text-slate-400 text-right">{seedMessage}</p>}
+        <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Seed Phrase Helper (offline test only)</h3>
+            <p className="text-xs text-amber-400 mt-1">
+              Never enter a real production seed here. Use only for offline test phrases. The phrase is
+              used in-memory to derive XPUBs and is never persisted.
+            </p>
           </div>
+          <SeedPhraseInput onDerive={handleDeriveFromSeed} message={seedMessage} />
         </div>
 
         {/* ── State Export / Import ──────────────────────────────────────── */}
